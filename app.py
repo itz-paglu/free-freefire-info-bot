@@ -1,115 +1,82 @@
-import discord
-from discord.ext import commands, tasks
 import os
-import traceback
+import logging
 from flask import Flask
-import sys
-import aiohttp
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes, AIORateLimiter
+)
 import asyncio
 from dotenv import load_dotenv
+from cogs.infoCommands import info_command  # Custom command handler
 
-# Initialize environment variables
+# Load environment variables
 load_dotenv()
+TOKEN = os.getenv("TOKEN")
+if not TOKEN:
+    raise ValueError("Missing TOKEN in environment")
 
-# Flask Setup
+# Logging setup
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# Flask setup for health check
 app = Flask(__name__)
 bot_name = "Loading..."
 
 @app.route('/')
 def home():
-    """Health check endpoint for Render"""
     return f"Bot {bot_name} is operational"
 
 def run_flask():
-    """Run Flask with Render-compatible settings"""
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# Discord Bot Setup
-TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("Missing TOKEN in environment")
+# Telegram command handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! I’m alive.")
 
-class Bot(commands.Bot):
-    def __init__(self):
-        # Configure minimal required intents
-        intents = discord.Intents.default()
-        intents.message_content = True
-        
-        super().__init__(
-            command_prefix="!",
-            intents=intents,
-            help_command=None
-        )
-        self.session = None
-
-    async def setup_hook(self):
-        """Initialize bot components"""
-        self.session = aiohttp.ClientSession()
-        
-        # Load cogs
-        try:
-            await self.load_extension("cogs.infoCommands")
-            print("✅ Successfully loaded InfoCommands cog")
-        except Exception as e:
-            print(f"❌ Failed to load cog: {e}")
-            traceback.print_exc()
-        
-        await self.tree.sync()
-        self.update_status.start()
-
-    async def on_ready(self):
-        """When bot connects to Discord"""
-        global bot_name
-        bot_name = str(self.user)
-        
-        print(f"\n🔗 Connected as {bot_name}")
-        print(f"🌐 Serving {len(self.guilds)} servers")
-        
-        # Start Flask if running on Render
-        if os.environ.get('RENDER'):
-            import threading
-            flask_thread = threading.Thread(target=run_flask, daemon=True)
-            flask_thread.start()
-            print("🚀 Flask server started in background")
-
-    @tasks.loop(minutes=5)
-    async def update_status(self):
-        """Update bot presence periodically"""
-        try:
-            activity = discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(self.guilds)} servers"
-            )
-            await self.change_presence(activity=activity)
-        except Exception as e:
-            print(f"⚠️ Status update failed: {e}")
-
-    @update_status.before_loop
-    async def before_status_update(self):
-        await self.wait_until_ready()
-
-    async def close(self):
-        """Cleanup on shutdown"""
-        if self.session:
-            await self.session.close()
-        await super().close()
+# Background task (e.g., periodic message to admin or logging)
+async def periodic_task(app):
+    while True:
+        logging.info("✅ Periodic task running...")
+        await asyncio.sleep(300)  # 5 minutes
 
 async def main():
-    bot = Bot()
-    try:
-        await bot.start(TOKEN)
-    except KeyboardInterrupt:
-        await bot.close()
-    except Exception as e:
-        print(f"⚠️ Critical error: {e}")
-        traceback.print_exc()
-        await bot.close()
+    global bot_name
 
-if __name__ == "__main__":
-    # Special handling for Render's environment
-    if os.environ.get('RENDER'):
-        asyncio.run(main())
-    else:
-        bot = Bot()
-        bot.run(TOKEN)
+    # Initialize Telegram bot
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .rate_limiter(AIORateLimiter())
+        .build()
+    )
+
+    # Register command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("info", info_command))
+
+    # Set bot_name
+    me = await application.bot.get_me()
+    bot_name = me.username
+    logging.info(f"🔗 Connected as @{bot_name}")
+
+    # Start Flask if on Render
+    if os.environ.get("RENDER"):
+        import threading
+        flask_thread = threading.Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        logging.info("🚀 Flask server started")
+
+    # Start background task
+    application.job_queue.run_repeating(
+        lambda ctx: logging.info("⏱️ Status update placeholder"), interval=300
+    )
+
+    # Start bot
+    await application.run_polling()
+
+if __name__ == '__main__':
+    asyncio.run(main())
