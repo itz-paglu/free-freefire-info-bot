@@ -1,4 +1,8 @@
 import os
+import telebot
+import requests
+import threading
+import sys
 import logging
 from flask import Flask
 from telegram import Update
